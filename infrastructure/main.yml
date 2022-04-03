@@ -1,0 +1,22 @@
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  valheim server
+
+Parameters:
+  ServerName:
+    Description: Organisation Id for this Stack deployment
+    Type: String
+    Default: undefined
+  DiscordWebhook:
+    Type: String
+    Default: fill_me_in
+
+
+Resources:
+  valheimStack:
+    Type: AWS::Serverless::Application
+    Properties:
+      Location: "./.aws-sam/build/template.yaml"
+      Parameters:
+        ServerName: !Ref ServerName
+        DiscordWebhook: !Ref DiscordWebhook

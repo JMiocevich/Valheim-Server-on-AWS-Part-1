@@ -1,0 +1,402 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: AWS Valheim Server
+
+Globals:
+  Function:
+    Timeout: 3
+    Tracing: Active
+    Runtime: nodejs14.x
+
+Parameters:
+
+  Image:
+    Type: String
+    Default: lloesche/valheim-server
+
+  Name:
+    Type: String
+    Default: earth
+
+  ServerName:
+    Type: String
+    Default: AWS_FARGATE_VALHEIM
+
+  StatusPort:
+    Type: Number
+    Default: 80
+  
+  DiscordWebHook:
+    Type: String
+    Default: __ 
+
+
+Resources:
+  # Functions
+  StartFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/lambdas/lambdaStartServer
+      Handler: lambdaHandler.handler
+      FunctionName: !Sub ${ AWS::StackName }-start
+      Environment:
+        Variables:
+          CLUSTER: !GetAtt Service.Name
+          SERVICE: !Ref Cluster
+          SECRET: !Sub ${ AWS::StackName }
+          BUCKET: !Ref Bucket
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: ec2:DescribeNetworkInterfaces
+              Resource: '*'
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref Secret
+            - Effect: Allow
+              Action:
+                - ecs:UpdateService
+                - ecs:DescribeServices
+                - ecs:ListTasks
+                - ecs:DescribeTasks
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'ecs:cluster': !GetAtt Cluster.Arn
+
+
+  StopFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../src/lambdas/lambdaStopService/
+      Handler: lambdaHandler.handler
+      FunctionName: !Sub ${ AWS::StackName }-stop
+      Environment:
+        Variables:
+          CLUSTER: !GetAtt Service.Name
+          SERVICE: !Ref Cluster
+          BUCKET: !Ref Bucket
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ecs:UpdateService
+                - ecs:DescribeServices
+              Resource: '*'
+              Condition:
+                StringEquals:
+                  'ecs:cluster': !GetAtt Cluster.Arn
+      Events:
+        SNSEvent:
+          Type: SNS
+          Properties:
+            Topic: !Ref SNSServerAlarm
+
+  Secret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${ AWS::StackName }
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: password
+        PasswordLength: 15
+        ExcludePunctuation: true
+
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Status: Enabled
+            NoncurrentVersionExpirationInDays: 10
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Network
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.0.0/24
+      AvailabilityZone: !Sub ${ AWS::Region }a
+      MapPublicIpOnLaunch: true
+
+  # Allow outbound internet access
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  InternetRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref RouteTable
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTable
+      SubnetId: !Ref Subnet
+
+  # ECS
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${ AWS::StackName }
+      CapacityProviders:
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: secrets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !Ref Secret
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: backups
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetBucketLocation
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:${ AWS::Partition }:s3:::${ Bucket }
+                  - !Sub arn:${ AWS::Partition }:s3:::${ Bucket }/*
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      RetentionInDays: 3
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${ AWS::StackName }
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 2048
+      Memory: 4GB
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub ${ AWS::StackName }
+          Image: !Ref Image
+          PortMappings:
+            - ContainerPort: !Ref StatusPort
+              Protocol: tcp
+            - ContainerPort: 2456
+              Protocol: udp
+            - ContainerPort: 2457
+              Protocol: udp
+            - ContainerPort: 2458
+              Protocol: udp
+          Environment:
+            - Name: SERVER_NAME
+              Value: !Ref ServerName
+            - Name: SERVER_PORT
+              Value: 2456
+            - Name: WORLD_NAME
+              Value: !Ref Name
+            - Name: SERVER_PUBLIC
+              Value: 'true'
+            - Name: UPDATE_INTERVAL
+              Value: '900'
+            - Name: BACKUPS_INTERVAL
+              Value: '10800'
+            - Name: BACKUPS_DIRECTORY
+              Value: '/config/backups'
+            - Name: BACKUPS_MAX_AGE
+              Value: '3'
+            - Name: BACKUPS_DIRECTORY_PERMISSIONS
+              Value: '755'
+            - Name: BACKUPS_FILE_PERMISSIONS
+              Value: '644'
+            - Name: CONFIG_DIRECTORY_PERMISSIONS
+              Value: '755'
+            - Name: WORLDS_DIRECTORY_PERMISSIONS
+              Value: '755'
+            - Name: WORLDS_FILE_PERMISSIONS
+              Value: '644'
+            - Name: DNS_1
+              Value: '10.0.0.2'
+            - Name: DNS_2
+              Value: '10.0.0.2'
+            - Name: STEAMCMD_ARGS
+              Value: 'validate'
+            - Name: STATUS_HTTP_PORT
+              Value: !Ref StatusPort
+
+            ## HOOKS
+           
+            ## DISCORD
+            - Name: DISCORD_WEBHOOK
+              Value: !Ref DiscordWebHook
+            - Name: DISCORD_START_MESSAGE
+              Value: Starting Valheim server
+            - Name: PRE_BOOTSTRAP_HOOK
+              Value: 'curl -sfSL -X POST -H "Content-Type: application/json" -d "{\"username\":\"Valheim\",\"content\":\"$DISCORD_START_MESSAGE\"}" "$DISCORD_WEBHOOK"'
+            - Name: POST_SERVER_LISTENING_HOOK
+              Value: 'curl -sfSL -X POST -H "Content-Type: application/json" -d "{\"username\":\"Valheim\",\"content\":\"$SERVER_NAME Ready to Connect\"}" "$DISCORD_WEBHOOK"'
+            - Name : VALHEIM_LOG_FILTER_CONTAINS_Spawned
+              Value: "Got character ZDOID from"
+            - Name: ON_VALHEIM_LOG_FILTER_CONTAINS_Spawned
+              Value: '{ read l; l=${l//*ZDOID from /}; l=${l// :*/}; msg="Player $l spawned into the world"; curl -sfSL -X POST -H "Content-Type: application/json" -d "{\"username\":\"Valheim\",\"content\":\"$msg\"}" "$DISCORD_WEBHOOK"; }'
+            - Name: PRE_SERVER_SHUTDOWN_HOOK
+              Value: 'curl -sfSL -X POST -H "Content-Type: application/json" -d "{\"username\":\"Valheim\",\"content\":\"Server Shutting Down\"}" "$DISCORD_WEBHOOK"'
+
+            # on cold-start: install pre-reqs
+            - Name: POST_BOOTSTRAP_HOOK
+              Value:
+                Fn::Join:
+                  - ' && '
+                  -
+                    # install awscli
+                    - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                    - unzip awscliv2.zip
+                    - ./aws/install
+                    - aws --version
+            # on startup: re-hydrate world
+            - Name: PRE_SERVER_RUN_HOOK
+              Value: !Sub aws s3 sync s3://${ Bucket }/worlds /config/worlds --delete
+            # on shutdown: de-hydrate world
+            - Name: POST_SERVER_SHUTDOWN_HOOK
+              Value: !Sub aws s3 sync /config/worlds s3://${ Bucket }/worlds --delete 
+            # on backup: sync to s3
+            - Name: POST_BACKUP_HOOK
+              Value: !Sub aws s3 sync /config/backups s3://${ Bucket }/backups --delete
+
+          Secrets:
+            - Name: SERVER_PASS
+              ValueFrom: !Sub "${ Secret }:password::"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Ref LogGroup
+              awslogs-stream-prefix: ecs
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+        VpcId: !Ref VPC
+        GroupDescription: pwmcintyre
+        SecurityGroupIngress:
+        - IpProtocol: udp
+          FromPort: 2456
+          ToPort: 2458
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: !Ref StatusPort
+          ToPort: !Ref StatusPort
+          CidrIp: 0.0.0.0/0
+
+  Service:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub ${ AWS::StackName }
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 0
+      LaunchType: FARGATE
+      EnableExecuteCommand: 'true'
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !GetAtt SecurityGroup.GroupId
+          Subnets:
+            - !Ref Subnet
+
+### ALARMS
+  SNSServerAlarm:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      DisplayName: !Sub ${ AWS::StackName }
+      TopicName: !Sub ${ AWS::StackName }
+
+  CloudWatchAlarm:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+        AlarmName: !Sub ${ AWS::StackName }
+        ActionsEnabled: true
+        AlarmActions: 
+          - !Ref SNSServerAlarm
+        MetricName: "CPUUtilization"
+        Namespace: "AWS/ECS"
+        Statistic: "Average"
+        Dimensions: 
+          - 
+            Name: "ServiceName"
+            Value: !Ref Cluster
+          - 
+            Name: "ClusterName"
+            Value: !Ref Cluster
+        Period: 60
+        EvaluationPeriods: 30
+        DatapointsToAlarm: 25
+        Threshold: 8
+        ComparisonOperator: "LessThanThreshold"
+        TreatMissingData: "notBreaching"
+
+
