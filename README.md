@@ -26,7 +26,7 @@ The following/requirements are needed.
 - Connect to server using the serverName, searching in the valheim server logs
 
 If however there is a issue, you can connect directly with an IP address.
-In AWS, got to : elastic container service/<serverName>/Tasks/<select first task>/netowrking/PublicIp
+In AWS, got to : `elastic container service/<serverName>/Tasks/<select first task>/netowrking/PublicIp`
 
 Further work is needed to automatically retrieve the IP address, this will be implemented alongside the discord bot.
 
