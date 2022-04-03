@@ -16,6 +16,7 @@ The following/requirements are needed.
 - Install required packages using npm install.
 - Edit the configuration section in `./ci/scripts/deploy.sh`
 - Change the deployment region to preferred region, change server name (this will be a searchable item in Valheim server browser)
+- Insert Discord WebHook
 - Run ./ci/scripts/deploy.sh
 - Goto secrets mananager and edit associated secret, will be the same as your server name
 - To start server run `aws lambda invoke --function-name ${serverName}-start /dev/stdout`, will take a few minutes to boot up, you will recieve a discord notification on server starting, and when the server is ready to connect

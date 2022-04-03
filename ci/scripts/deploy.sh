@@ -8,8 +8,8 @@ export SAM_CLI_TELEMETRY=0
 
 #Configuration
 export AWS_REGION="ap-southeast-2"
-export serverName="valhiem-test8"
-export discordWebHook="https://discord.com/api/webhooks/948765948964397066/7IEWojGl2pCGZDnh2_vo_uqjq_bHcNI_-ROD-RVrr0aHunzGyicyOo6pJgR5uWjh2es-"
+export serverName="INSERT_SERVER_NAME"
+export discordWebHook="INSERT_DISCORD_WEBHOOK"
 
 ###
 deploymentBucketName="${serverName}-deploy-bucket"
