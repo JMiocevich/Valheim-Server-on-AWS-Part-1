@@ -1,5 +1,5 @@
 # Valheim on AWS SAM
-For more instructions and setup go to [Valheim on AWS BlogPost](https://mechanicalrock.github.io/2022/04/04/valheim-server.html)
+For more instructions and setup go to [Valheim on AWS BlogPost]()
 
 
 ## Setup
